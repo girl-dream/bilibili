@@ -3,7 +3,7 @@ import { stdin as input, stdout as output } from 'node:process'
 import check from "./check.js"
 import get_info from "./info.js"
 import download from "./download.js"
-const r = readline.createInterface({ input, output, terminal: false })//process.platform !== 'win32'
+const r = readline.createInterface({ input, output, terminal: false })
 
     ; (async () => {
         let args = process.argv.slice(2)
@@ -12,7 +12,7 @@ const r = readline.createInterface({ input, output, terminal: false })//process.
 
         //判断用户状态
         await check.is_vip()
-        let answer = await r.question('请输入url/bv/av/ep/md/ss/au\n课程无法单独使用ss/md,需要使用node -lesson')
+        let answer = await r.question('请输入url/bv/av/ep/md/ss/au\n课程无法单独使用ss/md,需要使用node -lesson\n')
 
         let fnval, qn, type
         if (args.includes('-fnval')) {

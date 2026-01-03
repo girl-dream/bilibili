@@ -5,6 +5,10 @@ import { stdin as input, stdout as output } from "process"
 import fs from "node:fs"
 const r = readline.createInterface({ input, output, terminal: false })
 import { execSync } from "node:child_process"
+import { Readable } from "node:stream"
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+import { pipeline } from 'stream/promises'
 
 class Download {
     #aid
@@ -67,19 +71,19 @@ class Download {
         }
     }
 
-    model(data,fnval,qn,type) {
+    model(data, fnval, qn, type) {
         if ('list' in data) {
-            this.#video(fnval,qn)
+            this.#video(fnval, qn)
         } else if ('sid' in data) {
             this.#audio(this.#audio_sid)
         } else {
-            this.#bangumi(fnval,qn,type)
+            this.#bangumi(fnval, qn, type)
         }
     }
 
     // fnval 为 4048 为dash格式视频所有类型
     // fnval 为 1 为FLV/MP4格式视频
-    async #video(fnval = 4048,qn= 127) {
+    async #video(fnval = 4048, qn = 127) {
         await this.#check_p(this.#cid, 'video')
         if (this.#cid[0]) {
             for (let i = 0; i < this.#cid.length; i++) {
@@ -94,7 +98,7 @@ class Download {
 
     // type 为 pgc 为番剧
     // 实际上番剧和课程共用
-    async #bangumi(fnval = 4048,qn= 127,type='pgc') {
+    async #bangumi(fnval = 4048, qn = 127, type = 'pgc') {
         await this.#check_p(this.#arrary, 'bangumi')
         if (this.#arrary[0]) {
             for (let i = 0; i < this.#arrary.length; i++) {
@@ -164,6 +168,35 @@ class Download {
         return Buffer.concat(body)
     }
 
+    // 以流的方式下载 + 进度监控
+    async #downloadStream(url, fileName) {
+        const resp = await fetch(url, options)
+        const total = +resp.headers.get('content-length')
+        const filePath = join(dirname(fileURLToPath(import.meta.url)), fileName)
+        let loaded = 0
+        const writeStream = fs.createWriteStream(filePath)
+
+        // 使用管道直接连接响应流和写入流
+        const reader = resp.body.getReader()
+
+        while (true) {
+            const { done, value } = await reader.read()
+            if (done) {
+                break
+            }
+            loaded += value.length
+            // 直接写入文件流
+            if (!writeStream.write(value)) {
+                // 如果写入缓冲区已满，等待 drain 事件
+                await new Promise(resolve => writeStream.once('drain', resolve))
+            }
+            process.stdout.write(`\r下载中: ${Math.trunc(loaded / total * 100)}%`)
+        }
+        writeStream.end()
+        console.log('\n下载完成')
+    }
+
+
     //arg= true 为视频 arg= false 为番剧
     async #download(url, i, arg = true) {
         try {
@@ -171,12 +204,12 @@ class Download {
             let data = (arg ? res.data : res.result.video_info)
             if (Object.getOwnPropertyNames(this.#download_choose).length === 0) {
                 if (res.code === 0) {
-                    if ('dash' in data){
+                    if ('dash' in data) {
                         // 此处处理dash格式视频
                         await this.#choose_video(data)
                         await this.#choose_codecs(data)
                         await this.#choose_audio(data)
-                    } else if ('durl' in data){
+                    } else if ('durl' in data) {
 
                         // 目前哔哩哔哩支持mp4格式,避免未知格式提示警告
                         if (data.format !== 'mp4') {
@@ -192,9 +225,9 @@ class Download {
                         console.log('下载完成')
                         process.exit()
 
-                    } else  {
-                     console.error('未知错误')
-                     process.exit()
+                    } else {
+                        console.error('未知错误')
+                        process.exit()
                     }
                 } else {
                     console.log('获取信息失败')
@@ -214,8 +247,8 @@ class Download {
             this.#download_choose.url = video_choose_obj.find(item => item.codecid === this.#download_choose.codec_quality).baseUrl
             let temp
             console.log(`开始下载第${i + 1}个:${arg ? this.#cid[i].part : this.#arrary[i].title}`)
-            let video = await this.#download_AJAX(this.#download_choose.url)
-            fs.writeFileSync("./video.m4s", video)
+
+            await this.#downloadStream(this.#download_choose.url, 'video.m4s')
             console.log('\n下载音频')
             if (this.#download_choose.audio_quality == 30250) {
                 //杜比全景声
@@ -226,15 +259,14 @@ class Download {
             } else {
                 temp = data.dash.audio.find(item => item.id === this.#download_choose.audio_quality)
             }
-            let audio = await this.#download_AJAX(temp.baseUrl)
-            fs.writeFileSync("./audio.m4s", audio)
-            console.log('\n开始合并')
+            await this.#downloadStream(temp.baseUrl, 'audio.m4s')
 
+            console.log('\n开始合并')
             //避免文件名冲突
             let title = arg ? this.#cid[i].part : this.#arrary[i].title
 
             while (fs.existsSync(`${title}.${this.#type}`)) {
-                title = await r.question('文件名冲突,请输入新文件名:')
+                title = (await r.question('文件名冲突,请输入新文件名:')).replaceAll(/[\\\/:*?"<>|]/gm, "_")
             }
 
             // 避免mp4不支持fLaC编码的情况
@@ -257,7 +289,7 @@ class Download {
 
     async #choose_video(data) {
         let temp = new Set(data.dash.video.map(item => item.id))
-        if (temp.size == 1){
+        if (temp.size == 1) {
             this.#download_choose.video_quality = [...temp][0]
             return
         }
@@ -305,7 +337,7 @@ class Download {
 
     async #choose_audio(data) {
         let temp = new Set(data.dash.audio.map(item => item.id))
-        if (temp.size == 1){
+        if (temp.size == 1) {
             this.#download_choose.audio_quality = [...temp][0]
             return
         }
@@ -407,7 +439,7 @@ class Download {
                 data = response.data
                 break
             case 72000000:
-                console.error('参数错误'+ response.msg)
+                console.error('参数错误' + response.msg)
                 break
             case 7201006:
                 console.error(response.msg)
@@ -419,13 +451,11 @@ class Download {
         let title = data.title.replaceAll(/[\\\/:*?"<>|]/gm, "_")
 
         while (fs.existsSync(`${title}.m4a`)) {
-            title = await r.question('文件名冲突,请输入新文件名:')
+            title = (await r.question('文件名冲突,请输入新文件名:')).replaceAll(/[\\\/:*?"<>|]/gm, "_")
         }
 
         let download_url = data.cdns[0]
-        let audio = await this.#download_AJAX(download_url)
-        fs.writeFileSync(`./${title}.m4a`, audio)
-        console.log('\n下载完成')
+        await this.#downloadStream(download_url, `${title}.m4a`)
         process.exit()
     }
 }
@@ -435,7 +465,7 @@ function getVideoExtension(contentType) {
         'video/mp4': 'mp4',
         'video/x-matroska': 'mkv',
         'video/webm': 'webm',
-        'video/avi': 'avi',
+        'video/`avi': 'avi',
         'video/x-msvideo': 'avi',
         'video/quicktime': 'mov',
         'video/mpeg': 'mpeg',
@@ -446,7 +476,13 @@ function getVideoExtension(contentType) {
         'application/x-mpegURL': 'm3u8',
         'video/x-ms-wmv': 'wmv'
     }
-    return extensionMap[contentType.split(';')[0].toLowerCase().trim()]
+    let extension = extensionMap[contentType.split(';')[0].toLowerCase().trim()]
+    if (!extension){
+        console.warn('未能匹配启用默认后缀')
+        extension = 'm4a'
+    }
+
+    return extension
 }
 
 export default Download
